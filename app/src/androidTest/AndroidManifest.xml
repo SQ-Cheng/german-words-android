@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider android:name="cn.study.germanwords.FixtureDocumentsProvider" android:authorities="cn.study.germanwords.test.documents" android:exported="true" android:grantUriPermissions="true">
+        </provider>
+    </application>
+</manifest>

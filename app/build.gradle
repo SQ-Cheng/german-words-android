@@ -1,0 +1,16 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'cn.study.germanwords'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'cn.study.germanwords'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+        testInstrumentationRunner 'cn.study.germanwords.SmokeInstrumentation'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_11; targetCompatibility JavaVersion.VERSION_11 }
+    buildTypes { release { minifyEnabled false } }
+    lint { abortOnError true }
+}

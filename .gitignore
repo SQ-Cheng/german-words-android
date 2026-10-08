@@ -1,0 +1,9 @@
+.gradle/
+**/build/
+local.properties
+*.jks
+.idea/
+__pycache__/
+artifacts/*.apk
+artifacts/*.png
+artifacts/*.log
