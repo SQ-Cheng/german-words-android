@@ -10,3 +10,4 @@
 *.mp3 -text
 *.xlsx -text
 *.jar -text
+*.pdf -text

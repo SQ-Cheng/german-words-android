@@ -2,6 +2,8 @@
 
 独立 Android Studio 项目，来自「德语单词记忆助手 4.0」。原版 HTML 和词库未修改。
 
+[下载安装包](https://github.com/SQ-Cheng/german-words-android/releases/latest) · [PDF 使用说明](output/pdf/GermanWordsAndroid-User-Guide.pdf) · [问题与建议](https://github.com/SQ-Cheng/german-words-android/issues)
+
 ## 使用
 
 应用名称：**德语单词**，当前版本 **1.0.1**（versionCode 2）。首次打开直接进入 E1；课程标题右侧的菜单可选择 E1–E7 或「虚词大盘点」。内置 8 份 Excel、460 个词条及全部对应录音，安装后无需联网。
@@ -65,3 +67,9 @@ APK：`app/build/outputs/apk/debug/app-debug.apk`。这是使用 Android 默认�
 部分小米系统需要在运行测试时另行启动应用，并允许 USB 安装。测试会恢复原有星标、学习设置和导入目录。
 
 当前电脑可直接运行 `python .\tools\device-test.py 52ec00da`，脚本会安装两个 APK、启动测试提供器并处理前台启动。测试结束后，可用 `adb uninstall cn.study.germanwords.test` 移除测试辅助包；主应用保留。
+
+## GitHub 项目与反馈
+
+公开仓库：[SQ-Cheng/german-words-android](https://github.com/SQ-Cheng/german-words-android)。源代码、更新记录与 PDF 使用说明在仓库中；[Releases](https://github.com/SQ-Cheng/german-words-android/releases) 提供可安装 APK 和说明书下载。
+
+遇到问题或有改进建议，请登录 GitHub，在 [Issues](https://github.com/SQ-Cheng/german-words-android/issues) 中点击 **New issue**。描述操作步骤、预期结果、实际情况，并提供手机型号、Android 版本和应用版本；需要时附截图。
