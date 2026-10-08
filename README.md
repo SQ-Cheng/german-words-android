@@ -2,7 +2,7 @@
 
 独立 Android Studio 项目，来自「德语单词记忆助手 4.0」。原版 HTML 和词库未修改。
 
-[下载安装包](https://github.com/SQ-Cheng/german-words-android/releases/latest) · [PDF 使用说明](output/pdf/GermanWordsAndroid-User-Guide.pdf) · [问题与建议](https://github.com/SQ-Cheng/german-words-android/issues)
+[下载安装包](https://github.com/SQ-Cheng/german-words-android/releases/latest) · [PDF 使用说明](output/pdf/GermanWordsAndroid-User-Guide.pdf) · [图片使用说明](output/pdf/GermanWordsAndroid-User-Guide.png) · [问题与建议](https://github.com/SQ-Cheng/german-words-android/issues)
 
 ## 使用
 
@@ -73,3 +73,5 @@ APK：`app/build/outputs/apk/debug/app-debug.apk`。这是使用 Android 默认�
 公开仓库：[SQ-Cheng/german-words-android](https://github.com/SQ-Cheng/german-words-android)。源代码、更新记录与 PDF 使用说明在仓库中；[Releases](https://github.com/SQ-Cheng/german-words-android/releases) 提供可安装 APK 和说明书下载。
 
 遇到问题或有改进建议，请登录 GitHub，在 [Issues](https://github.com/SQ-Cheng/german-words-android/issues) 中点击 **New issue**。描述操作步骤、预期结果、实际情况，并提供手机型号、Android 版本和应用版本；需要时附截图。
+
+也可扫描使用说明末尾的问卷星二维码填写反馈；说明书提供 PDF 和高清 PNG 两种格式。
