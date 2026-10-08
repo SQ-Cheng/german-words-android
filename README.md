@@ -1,6 +1,7 @@
 # 德语单词 Android
 
 独立 Android Studio 项目，来自「德语单词记忆助手 4.0」。原版 HTML 和词库未修改。
+致谢: 王老师, 子恒同学, 以及开发之前版本的同学. 
 
 [下载安装包](https://github.com/SQ-Cheng/german-words-android/releases/latest) · [PDF 使用说明](output/pdf/GermanWordsAndroid-User-Guide.pdf) · [图片使用说明](output/pdf/GermanWordsAndroid-User-Guide.png) · [问题与建议](https://github.com/SQ-Cheng/german-words-android/issues)
 
