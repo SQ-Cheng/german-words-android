@@ -3,6 +3,7 @@ package cn.study.germanwords;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.media.MediaPlayer;
@@ -11,7 +12,6 @@ import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Base64;
-import android.view.View;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -20,7 +20,6 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Toast;
 import android.widget.FrameLayout;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -40,7 +39,6 @@ public class MainActivity extends Activity {
     private MediaPlayer player;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private volatile boolean destroyed;
-    private String backup;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -60,6 +58,7 @@ public class MainActivity extends Activity {
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setTextZoom(Math.round(getResources().getConfiguration().fontScale * 100));
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccessFromFileURLs(false);
@@ -69,6 +68,9 @@ public class MainActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         web.addJavascriptInterface(new AndroidBridge(), "Android");
         web.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                applyTextScale(getResources().getConfiguration().fontScale);
+            }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 return resource(request.getUrl());
             }
@@ -90,6 +92,15 @@ public class MainActivity extends Activity {
             }
         });
         web.loadUrl("https://" + HOST + "/assets/web/index.html");
+    }
+
+    void applyTextScale(float scale) {
+        web.getSettings().setTextZoom(Math.round(scale * 100));
+        web.evaluateJavascript("document.documentElement.classList.toggle('large-text'," + (scale >= 1.3f) + ")", null);
+    }
+    @Override public void onConfigurationChanged(Configuration config) {
+        super.onConfigurationChanged(config);
+        applyTextScale(config.fontScale);
     }
 
     private boolean isLocal(Uri uri) { return "https".equals(uri.getScheme()) && HOST.equals(uri.getHost()); }
@@ -151,14 +162,20 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void play(String url) { runOnUiThread(() -> playAudio(url)); }
         @JavascriptInterface public void exportBackup(String data) {
             if (data.length() > 4*1024*1024) return;
-            runOnUiThread(() -> {
-                backup = data;
-                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                        .setType("application/json").putExtra(Intent.EXTRA_TITLE, "german-words-backup.json");
-                try { startActivityForResult(intent, BACKUP); } catch (Exception e) { notice("没有可用的文件管理器", "error"); }
+            worker.execute(() -> {
+                try (OutputStream out = new FileOutputStream(pendingBackup())) {
+                    out.write(data.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException e) { notice("备份失败：" + e.getMessage(), "error"); return; }
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/json").putExtra(Intent.EXTRA_TITLE, "german-words-backup.json");
+                    try { startActivityForResult(intent, BACKUP); } catch (Exception e) { notice("没有可用的文件管理器", "error"); }
+                });
             });
         }
     }
+    private File pendingBackup() { return new File(getCacheDir(), "pending-backup.json"); }
     private static byte[] read(InputStream input, int limit) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[16384];
@@ -179,13 +196,17 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);
-        if (result!=RESULT_OK || data==null) return;
+        if (result!=RESULT_OK || data==null) {
+            if (request==BACKUP) pendingBackup().delete();
+            return;
+        }
         if (request==BACKUP) {
-            try (OutputStream out=getContentResolver().openOutputStream(data.getData())) {
-                out.write(backup.getBytes(StandardCharsets.UTF_8));
+            try (InputStream in = new FileInputStream(pendingBackup()); OutputStream out=getContentResolver().openOutputStream(data.getData())) {
+                if (out == null) throw new IOException("无法写入文件");
+                out.write(read(in, 4*1024*1024));
                 notice("学习进度已备份", "info");
             } catch (Exception e) { notice("备份失败："+e.getMessage(),"error"); }
-            backup=null;
+            pendingBackup().delete();
             return;
         }
         if (request!=FOLDER && request!=FILES) return;
@@ -209,22 +230,16 @@ public class MainActivity extends Activity {
             if (!session.mkdirs()) throw new IOException("无法创建导入目录");
             if (request==FOLDER) {
                 Uri tree=data.getData();
-                restoredBackup = scanTree(tree,DocumentsContract.getTreeDocumentId(tree),"",session,entries,0);
+                scanTree(tree,DocumentsContract.getTreeDocumentId(tree),"",session,entries,0);
             } else {
                 List<Uri> uris=new ArrayList<>();
                 if (data.getClipData()!=null) for(int i=0;i<data.getClipData().getItemCount();i++) uris.add(data.getClipData().getItemAt(i).getUri());
                 else if(data.getData()!=null) uris.add(data.getData());
                 for(Uri uri:uris) if(copyDocument(uri,displayName(uri),session,entries)) restoredBackup = true;
             }
-            boolean hasBook=false;
-            for(int i=0;i<entries.length();i++) if(entries.getJSONObject(i).getString("name").toLowerCase(Locale.ROOT).endsWith(".xlsx")) hasBook=true;
-            if (!hasBook) {
-                if (entries.length()>0) {
-                    // Standalone audio imports can extend the current library too.
-                    hasBook = true;
-                }
-                else if(!restoredBackup) notice("没有找到支持的文件", "warn");
-                if (!hasBook) return;
+            if (entries.length()==0) {
+                if(!restoredBackup) notice("没有找到支持的文件", "warn");
+                return;
             }
             JSONArray all=new JSONArray();
             File manifest=new File(getFilesDir(),"import-manifest.json");
@@ -245,8 +260,7 @@ public class MainActivity extends Activity {
         if(children!=null) for(File child:children) deleteSession(child);
         if(file.exists() && !file.delete()) android.util.Log.w("GermanWords","Unable to remove failed import staging file");
     }
-    private boolean scanTree(Uri tree,String id,String parent,File session,JSONArray entries,int depth) throws Exception {
-        boolean restored = false;
+    private void scanTree(Uri tree,String id,String parent,File session,JSONArray entries,int depth) throws Exception {
         if(depth>32 || entries.length()>5000) throw new IOException("文件夹层级或文件数过多");
         Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(tree,id);
         try(Cursor cursor=getContentResolver().query(children,new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME,DocumentsContract.Document.COLUMN_MIME_TYPE},null,null,null)) {
@@ -254,27 +268,35 @@ public class MainActivity extends Activity {
             while(cursor.moveToNext()) {
                 String childId=cursor.getString(0),name=cursor.getString(1),mime=cursor.getString(2);
                 String path=parent+name;
-                if(DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) { if(scanTree(tree,childId,path+"/",session,entries,depth+1)) restored = true; }
-                else if(supported(name)) { if(copyDocument(DocumentsContract.buildDocumentUriUsingTree(tree,childId),path,session,entries)) restored = true; }
+                if(DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) scanTree(tree,childId,path+"/",session,entries,depth+1);
+                else if(supported(name) && !name.toLowerCase(Locale.ROOT).endsWith(".json")) {
+                    copyDocument(DocumentsContract.buildDocumentUriUsingTree(tree,childId),path,session,entries);
+                }
             }
         }
-        return restored;
     }
     private boolean copyDocument(Uri uri,String path,File session,JSONArray entries) throws Exception {
         String name=path.substring(path.lastIndexOf('/')+1);
         if(!supported(name)) return false;
         try(InputStream in=getContentResolver().openInputStream(uri)) {
             if(in==null) throw new IOException("无法读取 "+name);
-            byte[] bytes=read(in,32*1024*1024);
             if(name.toLowerCase(Locale.ROOT).endsWith(".json")) {
-                String content=new String(bytes,StandardCharsets.UTF_8);
+                String content=new String(read(in,4*1024*1024),StandardCharsets.UTF_8);
                 js("restoreBackup("+JSONObject.quote(content)+")");
                 return true;
             }
             File file=privateFile(session.getName()+"/"+path);
+            if (!file.getCanonicalPath().startsWith(session.getCanonicalPath() + File.separator)) throw new IOException("无效的文件名");
             File parent=file.getParentFile();
             if(!parent.exists() && !parent.mkdirs()) throw new IOException("无法保存文件");
-            try(OutputStream out=new FileOutputStream(file)) { out.write(bytes); }
+            try(OutputStream out=new FileOutputStream(file)) {
+                byte[] buffer = new byte[16384]; int size = 0, count;
+                while ((count=in.read(buffer))!=-1) {
+                    size += count;
+                    if (size > 32*1024*1024) throw new IOException("文件过大");
+                    out.write(buffer, 0, count);
+                }
+            }
             JSONObject entry=new JSONObject();
             entry.put("name",name).put("path",session.getName()+"/"+path).put("url","/library/"+session.getName()+"/"+path).put("imported",true);
             entries.put(entry);
@@ -292,14 +314,14 @@ public class MainActivity extends Activity {
                 try(AssetFileDescriptor fd=getAssets().openFd(path.substring(8))) { player.setDataSource(fd.getFileDescriptor(),fd.getStartOffset(),fd.getLength()); }
             } else if(path.startsWith("/library/")) player.setDataSource(privateFile(path.substring(9)).getPath());
             else throw new IOException("找不到本地音频");
-            player.setOnPreparedListener(MediaPlayer::start);
+            player.setOnPreparedListener(p -> { if (p == player) p.start(); });
             player.setOnCompletionListener(p -> { if(p==player) releaseAudio(); });
-            player.setOnErrorListener((p,what,extra) -> { releaseAudio(); notice("音频无法播放，请检查文件格式", "error"); return true; });
+            player.setOnErrorListener((p,what,extra) -> { if (p == player) { releaseAudio(); notice("音频无法播放，请检查文件格式", "error"); } return true; });
             player.prepareAsync();
         } catch(Exception e) { releaseAudio(); notice("音频加载失败："+e.getMessage(),"error"); }
     }
     private void releaseAudio() { if(player!=null) { player.release(); player=null; } }
-    @Override public void onBackPressed() { web.evaluateJavascript("handleAndroidBack()", value -> { if(!"true".equals(value)) super.onBackPressed(); }); }
+    @Override public void onBackPressed() { web.evaluateJavascript("typeof handleAndroidBack==='function' && handleAndroidBack()", value -> { if(!"true".equals(value)) super.onBackPressed(); }); }
     @Override protected void onPause() { super.onPause(); web.evaluateJavascript("if(typeof pauseStudyAudio==='function')pauseStudyAudio()",null); releaseAudio(); web.onPause(); }
     @Override protected void onResume() { super.onResume(); if(web!=null) web.onResume(); }
     @Override protected void onDestroy() { destroyed=true; releaseAudio(); worker.shutdown(); web.removeJavascriptInterface("Android"); web.destroy(); super.onDestroy(); }

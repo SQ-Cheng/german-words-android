@@ -14,10 +14,8 @@ import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.content.pm.ActivityInfo;
 import android.media.MediaPlayer;
-import java.nio.file.Files;
 import java.lang.reflect.Field;
 import org.json.JSONObject;
-import org.json.JSONArray;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -65,6 +63,38 @@ public class SmokeInstrumentation extends Instrumentation {
             }
             if(!result.contains("PASS"))throw new IOException("Engine device tests: "+result);
             oldPreferences=evaluate("localStorage.getItem(PREF_KEY)");
+            evaluate("autoPlayEnabled=false;isFilterActive=false;switchView('card');document.getElementById('modeSelect').value='normal';changeMode()");
+            for(float scale:new float[]{1f,1.3f,1.5f,2f}) {
+                runOnMainSync(() -> activity.applyTextScale(scale));
+                SystemClock.sleep(300);
+                if(!"true".equals(evaluate("document.documentElement.scrollWidth<=innerWidth+1 && document.querySelector('.main-content').scrollWidth<=innerWidth+1")))throw new IOException("Horizontal overflow at text zoom "+scale);
+                evaluate("document.getElementById('btnNextCard').scrollIntoView({block:'nearest'})");
+                SystemClock.sleep(100);
+                if(!"true".equals(evaluate("(()=>{const b=document.getElementById('btnNextCard').getBoundingClientRect();return b.width>=44 && b.height>=44 && b.left>=0 && b.right<=innerWidth+1 && b.top>=0 && b.bottom<=innerHeight+1})()")))throw new IOException("Navigation inaccessible at text zoom "+scale);
+                evaluate("document.getElementById('libraryButton').scrollIntoView({block:'nearest'});openLibrary()");
+                if(!"true".equals(evaluate("libraryOpen && document.getElementById('library').scrollWidth<=innerWidth+1")))throw new IOException("Drawer at text zoom "+scale);
+                evaluate("closeLibrary();document.getElementById('lessonTitle').scrollIntoView({block:'start'})");
+                SystemClock.sleep(100);
+                screenshot("qa-font-"+Math.round(scale*100)+".png");
+                evaluate("switchView('list');document.getElementById('modeSelect').value='test-zh';changeMode()");
+                SystemClock.sleep(200);
+                if(!"true".equals(evaluate("document.getElementById('wordTable').getBoundingClientRect().right<=innerWidth+1 && document.querySelector('#wordTable tbody tr').cells[0].textContent===''")))throw new IOException("Self-test list at text zoom "+scale);
+                if(scale==2f)screenshot("qa-list-200.png");
+                evaluate("switchView('card');document.getElementById('modeSelect').value='normal';changeMode()");
+            }
+            runOnMainSync(() -> activity.web.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
+                    Math.round(320*activity.getResources().getDisplayMetrics().density),android.widget.FrameLayout.LayoutParams.MATCH_PARENT)));
+            for(float scale:new float[]{1f,2f}) {
+                runOnMainSync(() -> activity.applyTextScale(scale));SystemClock.sleep(300);
+                evaluate("document.getElementById('btnNextCard').scrollIntoView({block:'nearest'})");
+                SystemClock.sleep(100);
+                if(!"true".equals(evaluate("innerWidth<=321 && document.querySelector('.main-content').scrollWidth<=innerWidth+1 && document.getElementById('btnNextCard').getBoundingClientRect().right<=innerWidth+1")))throw new IOException("320dp card layout at text zoom "+scale);
+                evaluate("switchView('list');document.getElementById('modeSelect').value='test-de';changeMode()");
+                if(!"true".equals(evaluate("document.getElementById('wordTable').getBoundingClientRect().right<=innerWidth+1")))throw new IOException("320dp list layout at text zoom "+scale);
+                evaluate("switchView('card');document.getElementById('modeSelect').value='normal';changeMode()");
+            }
+            runOnMainSync(() -> activity.web.setLayoutParams(new android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT,android.widget.FrameLayout.LayoutParams.MATCH_PARENT)));
+            runOnMainSync(() -> activity.applyTextScale(activity.getResources().getConfiguration().fontScale));
             // Real native MediaPlayer must prepare and play a packaged recording.
             evaluate("pauseStudyAudio(); Android.play(audioSource(displayWords[0]).url); true");
             Field field=MainActivity.class.getDeclaredField("player");field.setAccessible(true);
@@ -106,7 +136,7 @@ public class SmokeInstrumentation extends Instrumentation {
             if(!"true".equals(evaluate("innerWidth>innerHeight && document.documentElement.scrollWidth<=innerWidth+1 && document.getElementById('btnNextCard').getBoundingClientRect().right<=innerWidth")))throw new IOException("Landscape layout");
             runOnMainSync(() -> activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED));
             android.util.Log.d("GermanWordsTest","Landscape verified");
-            results.putString("stream", "\n"+result+"\nPASS: native packaged/imported audio playback, recursive SAF folder import, single XLSX import, landscape layout.\n");
+            results.putString("stream", "\n"+result+"\nPASS: 100/130/150/200% text zoom, 320dp narrow layout, accessible navigation/menu and self-test lists, native packaged/imported audio playback, recursive SAF folder import, single XLSX import, landscape layout.\n");
             resultCode=Activity.RESULT_OK;
         } catch(Exception e) {
             results.putString("stream", "\nFAIL: "+e+"\n");
@@ -121,7 +151,7 @@ public class SmokeInstrumentation extends Instrumentation {
             if(activity!=null && oldPreferences!=null)try {
                 evaluate("pauseStudyAudio();localStorage.setItem(PREF_KEY,"+oldPreferences+");preferences=JSON.parse(localStorage.getItem(PREF_KEY)||'{}');applyPreferences();reloadLibrary()");
             }catch(Exception ignored){}
-            if(activity!=null)runOnMainSync(() -> activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED));
+            if(activity!=null)runOnMainSync(() -> {activity.applyTextScale(activity.getResources().getConfiguration().fontScale);activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);});
         }
         finish(resultCode,results);
     }
@@ -129,6 +159,12 @@ public class SmokeInstrumentation extends Instrumentation {
         try(InputStream in=new FileInputStream(file);ByteArrayOutputStream out=new ByteArrayOutputStream()) {
             byte[] buf=new byte[4096];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);return out.toByteArray();
         }
+    }
+    private void screenshot(String name) throws IOException {
+        android.graphics.Bitmap bitmap=getUiAutomation().takeScreenshot();
+        if(bitmap==null)throw new IOException("Screenshot unavailable");
+        try(OutputStream out=new FileOutputStream(new File(activity.getFilesDir(),name))){bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,out);}
+        finally {bitmap.recycle();}
     }
     private void waitImported(String name) throws Exception {
         for(int i=0;i<100;i++) {

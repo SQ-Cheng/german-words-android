@@ -6,6 +6,9 @@
     autoPlayEnabled=false;
     pauseStudyAudio();
     isFilterActive=false;
+    currentView='card';
+    document.getElementById('modeSelect').value='normal';changeMode();
+    preferences.books=Object.create(null);
     const names=Object.keys(fileMap).filter(n=>!fileMap[n].imported);
     assert(names.length===8,'eight bundled books');
     let total=0,audio=0;
@@ -43,12 +46,35 @@
     assert(document.getElementById('chineseArea').classList.contains('hidden-content'),'hide Chinese');
     toggleReveal();assert(!document.getElementById('chineseArea').classList.contains('hidden-content'),'reveal Chinese');
     document.getElementById('modeSelect').value='normal';changeMode();
+    const original=displayWords.map(w=>w.id).join('|');
     const before=displayWords.map(w=>w.id).sort().join('|');shuffleCurrentList();
     assert(before===displayWords.map(w=>w.id).sort().join('|'),'shuffle preserves words');
+    assert(isShuffled && document.getElementById('btnShuffle').textContent==='恢复顺序','shuffle toggle on');
+    const shuffled=displayWords.map(w=>w.id).join('|');
+    toggleFilter();assert(preferences.books[currentFileName].order.length===65,'save full shuffled book while filtered');
+    toggleFilter();assert(displayWords.map(w=>w.id).join('|')===shuffled,'filter preserves shuffled order');
+    await loadFile(currentFileName);assert(displayWords.map(w=>w.id).join('|')===shuffled,'resume shuffled order');
+    shuffleCurrentList();assert(!isShuffled && displayWords.map(w=>w.id).join('|')===original,'second tap restores order');
     switchView('list');assert(document.querySelectorAll('#wordTable tbody tr').length===65,'list rows');
     document.querySelector('#wordTable tbody tr').click();
     assert(currentFileWords.filter(w=>w.marked).length===1,'list star tap');
+    const firstRow=()=>document.querySelector('#wordTable tbody tr');
+    document.getElementById('modeSelect').value='test-zh';changeMode();
+    assert(firstRow().cells[0].textContent==='' && firstRow().cells[2].textContent==='' && !firstRow().querySelector('.list-audio'),'list conceals German, metadata and audio');
+    firstRow().querySelector('.list-star').click();
+    assert(firstRow().cells[0].textContent==='','star does not reveal answer');
+    firstRow().querySelector('.list-answer button').click();
+    assert(firstRow().cells[0].textContent!=='' && firstRow().querySelector('.list-audio'),'list reveals German');
+    assert(document.querySelectorAll('#wordTable tbody tr')[1].cells[0].textContent==='','independent row answers');
+    firstRow().querySelector('.list-answer button').click();assert(firstRow().cells[0].textContent==='','hide list answer');
+    document.getElementById('modeSelect').value='test-de';changeMode();
+    assert(firstRow().cells[1].textContent==='' && firstRow().cells[0].textContent!=='','list conceals Chinese');
+    firstRow().click();assert(firstRow().cells[1].textContent!=='','list reveals Chinese');
+    document.getElementById('modeSelect').value='normal';changeMode();
     switchView('card');
+    assert(!document.querySelector('.app-header'),'no redundant top header');
+    assert(document.getElementById('lessonCount').parentElement===document.getElementById('lessonTitle').parentElement,'count beside book');
+    assert(document.getElementById('libraryButton').parentElement.className==='lesson-heading','menu in book row');
     openLibrary();assert(handleAndroidBack()===true && !libraryOpen,'back closes drawer');
     assert(document.documentElement.scrollWidth<=window.innerWidth+1,'no horizontal overflow');
     const next=document.getElementById('btnNextCard').getBoundingClientRect();
@@ -57,7 +83,7 @@
     processData([example]);
     assert(document.getElementById('cardGerman').textContent==='<b>literal</b>','literal imported text');
     assert(document.getElementById('cardExample').innerText==='A & B','examples');
-    report='PASS: 460 words / 460 matching recordings; real Java inflate, three modes, audio hiding, stars, empty filter, navigation, per-book resume, shuffle, list, back, literal text and portrait layout.';
+    report='PASS: 460 words / 460 matching recordings; three modes in cards and lists, answer hiding/reveal, reversible shuffle, filtered/resumed order, stars, empty filter, navigation, compact heading, back, literal text and portrait layout.';
   } catch(e) { report='FAIL: '+e.stack; }
   finally {
     pauseStudyAudio();

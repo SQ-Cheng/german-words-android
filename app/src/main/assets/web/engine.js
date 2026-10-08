@@ -281,6 +281,9 @@
 
       // === 全局变量 ===
       let currentFileWords = []; // 当前文件的全部词条
+      let orderedWords = []; // 完整词表的当前顺序，筛选不改变它
+      let isShuffled = false;
+      const revealedListIds = new Set();
       let displayWords = []; // 当前展示列表（受筛选 / 乱序影响）
       let currentIndex = 0;
       let isFilterActive = false;
@@ -304,13 +307,11 @@
       const STORAGE_KEY = "german_app_memory";
 
       // === 统一的消息提示（替代原来只写 console / 弹 alert 的做法） ===
-      const notifySeen = new Set();
       function notify(message, kind) {
-        const line = kind + "|" + message;
-        if (notifySeen.has(line)) return;
-        notifySeen.add(line);
         const box = document.getElementById("notice");
         if (!box) return;
+        // Only suppress duplicates while the message is visible; later retries still report errors.
+        if (Array.from(box.children).some(el => el.textContent === message)) return;
         const el = document.createElement("div");
         el.className = "toast toast-" + (kind || "info");
         el.textContent = message;
@@ -349,7 +350,7 @@
 
       // === 进度存储：localStorage 不可用时降级到内存，并明确告知用户 ===
       const store = (function () {
-        const memory = {};
+        const memory = Object.create(null);
         let usable = false;
         try {
           window.localStorage.setItem("__probe__", "1");
@@ -366,7 +367,7 @@
               : memory[STORAGE_KEY];
             if (!raw) return {};
             const data = JSON.parse(raw);
-            return data && typeof data === "object" ? data : {};
+            return data && typeof data === "object" && !Array.isArray(data) ? data : {};
           } catch (e) {
             return {};
           }
@@ -400,21 +401,13 @@
             else if (!isMarked && at !== -1) list.splice(at, 1);
             if (!writeAll(all)) {
               notify(
-                "浏览器不允许保存进度（可能是隐私模式），本次星标在关闭页面后会丢失。",
+                "无法保存星标，请检查手机存储空间。",
                 "warn"
               );
             }
           },
         };
       })();
-
-      // === 绑定事件 ===
-      document
-        .getElementById("folderInput")
-        .addEventListener("change", (e) => handleFiles(e.target.files));
-      document
-        .getElementById("fileInput")
-        .addEventListener("change", (e) => handleFiles(e.target.files));
 
       // 浏览器要求先有用户交互才允许出声；记录一次即可
       ["pointerdown", "touchstart", "keydown"].forEach(function (type) {
@@ -579,6 +572,7 @@
       }
 
       function playPronounce(word) {
+        if (autoPlayTimer) { clearTimeout(autoPlayTimer); autoPlayTimer = null; }
         const src = audioSource(word);
         if (!src) {
           notify("「" + word.german + "」没有找到对应的音频文件", "warn");
@@ -769,6 +763,7 @@
           fileMap[key] = file;
           const li = document.createElement("li");
           li.className = "file-item";
+          li.dataset.fileName = key;
           li.textContent = key;
           li.onclick = function () {
             loadFile(key);
@@ -807,10 +802,9 @@
 
       async function loadFile(fileName) {
         const sequence = ++loadSequence;
-        document.querySelectorAll(".file-item").forEach(function (el) {
-          el.classList.toggle("active", el.textContent === fileName);
-        });
-        
+        pauseStudyAudio();
+        restoring = true;
+        let success = false;
         try {
           const sheets = await XLSX_READER.read(fileMap[fileName]);
           if (sequence !== loadSequence) return;
@@ -825,21 +819,31 @@
             return;
           }
           currentFileName = fileName;
-          processData(parsed.words);
+          processData(parsed.words, preferences.books[fileName]);
+          document.querySelectorAll(".file-item").forEach(el => {
+            el.classList.toggle("active", el.dataset.fileName === fileName);
+          });
+          closeLibrary();
+          success = true;
           parsed.warnings.forEach(function (w) {
             notify(w, "warn");
           });
-          return true;
+          return success;
         } catch (err) {
           if (sequence !== loadSequence) return;
           notify(
             "读取「" + fileName + "」失败：" + (err && err.message ? err.message : err),
             "error"
           );
+        } finally {
+          if (sequence === loadSequence) {
+            restoring = false;
+            if (success) saveStudy();
+          }
         }
       }
 
-      function processData(words) {
+      function processData(words, saved) {
         currentFileWords = words;
         const source = fileMap[currentFileName];
         currentFileWords.forEach(w => w.sourceRoot = source && source.root);
@@ -847,18 +851,30 @@
         currentFileWords.forEach(function (w) {
           w.marked = savedMarks.indexOf(w.german) !== -1;
         });
-
+        orderedWords = currentFileWords.slice();
+        isShuffled = !!(saved && saved.shuffled);
+        // Migrate the 1.0.0 saved order, including incomplete lists saved during a star filter.
+        if (saved && Array.isArray(saved.order)) {
+          const ranks = new Map(saved.order.map((id, i) => [id, i]));
+          if (saved.shuffled === undefined) {
+            isShuffled = saved.order.length === words.length && saved.order.some((id, i) => id !== words[i].id);
+          }
+          if (isShuffled) orderedWords.sort((a, b) =>
+            (ranks.has(a.id) ? ranks.get(a.id) : Infinity) - (ranks.has(b.id) ? ranks.get(b.id) : Infinity));
+        }
+        revealedListIds.clear();
         document.getElementById("emptyState").style.display = "none";
         currentIndex = 0;
         isRevealed = false;
         lastAutoKey = null;
-        refreshDisplayList();
+        refreshDisplayList(false, saved && saved.word);
       }
 
       // === 列表管理（筛选与排序） ===
       // keepIndex：在“只看星标”里取消星标时不要跳回第一张
-      function refreshDisplayList(keepIndex) {
-        let baseList = currentFileWords.slice();
+      function refreshDisplayList(keepIndex, selectedId) {
+        pauseStudyAudio();
+        let baseList = orderedWords.slice();
 
         // 筛选
         if (isFilterActive) {
@@ -871,39 +887,33 @@
         currentIndex = keepIndex
           ? Math.min(currentIndex, Math.max(0, displayWords.length - 1))
           : 0;
+        const selected = selectedId ? displayWords.findIndex(w => w.id === selectedId) : -1;
+        if (selected >= 0) currentIndex = selected;
         isRevealed = false;
         lastAutoKey = null;
         updateUI();
       }
 
       function shuffleCurrentList() {
-        if (displayWords.length === 0) return;
-
-        // Fisher-Yates Shuffle
-        for (let i = displayWords.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          const tmp = displayWords[i];
-          displayWords[i] = displayWords[j];
-          displayWords[j] = tmp;
+        if (currentFileWords.length === 0) return;
+        isShuffled = !isShuffled;
+        orderedWords = currentFileWords.slice();
+        if (isShuffled) {
+          for (let i = orderedWords.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [orderedWords[i], orderedWords[j]] = [orderedWords[j], orderedWords[i]];
+          }
         }
-
-        currentIndex = 0;
-        isRevealed = false;
-        lastAutoKey = null;
-        updateUI();
-
-        const btn = document.getElementById("btnShuffle");
-        const originalText = btn.innerText;
-        btn.innerText = "✅ 已乱序";
-        setTimeout(function () {
-          btn.innerText = originalText;
-        }, 1000);
+        revealedListIds.clear();
+        refreshDisplayList();
       }
 
       // === 模式与视图 ===
       function changeMode() {
+        pauseStudyAudio();
         currentMode = document.getElementById("modeSelect").value;
         isRevealed = false; // 切换模式时重置显示状态
+        revealedListIds.clear();
         lastAutoKey = null;
         updateUI();
       }
@@ -917,6 +927,8 @@
       }
 
       function switchView(view) {
+        pauseStudyAudio();
+        lastAutoKey = null;
         currentView = view;
         document
           .getElementById("btnCardView")
@@ -929,8 +941,9 @@
 
       function toggleReveal() {
         if (currentMode === "normal" || !displayWords.length) return;
+        if (currentView === "list") { toggleListReveal(displayWords[currentIndex]); return; }
         isRevealed = !isRevealed;
-        renderCard(); // 需要重新渲染卡片以更新颜色
+        updateUI();
       }
 
       function getBgClass(word) {
@@ -961,7 +974,7 @@
         const cardCont = document.getElementById("cardViewContainer");
         const listCont = document.getElementById("listViewContainer");
         const emptyEl = document.getElementById("emptyState");
-
+        emptyEl.style.display = "none";
         if (displayWords.length === 0) {
           if (isFilterActive && currentFileWords.length > 0) {
             cardCont.style.display = currentView === "card" ? "flex" : "none";
@@ -972,11 +985,7 @@
             listCont.style.display = "none";
             emptyEl.style.display = "flex";
           }
-          updateNav();
-          return;
-        }
-
-        if (currentView === "card") {
+        } else if (currentView === "card") {
           cardCont.style.display = "flex";
           listCont.style.display = "none";
           renderCard();
@@ -986,18 +995,23 @@
           renderList();
         }
         updateNav();
+        paintStudy();
+        saveStudy();
       }
 
       function renderEmptyView() {
         if (currentView === "card") {
           const cardEl = document.getElementById("cardView");
           cardEl.className = "card bg-other";
+          document.getElementById("germanArea").classList.remove("hidden-content");
           document.getElementById("cardGerman").innerText = "没有星标单词";
           document.getElementById("chineseArea").style.visibility = "hidden";
           document.getElementById("metaArea").style.visibility = "hidden";
           document.getElementById("cardIndexInfo").innerText = "";
           document.getElementById("pronounceIcon").style.display = "none";
           document.getElementById("exampleArea").style.display = "none";
+          document.getElementById("clickHint").style.opacity = "0";
+          document.getElementById("clickHint").hidden = true;
           cardEl.classList.remove("marked");
         } else {
           const cols = document.querySelectorAll("#wordTable thead th").length || 5;
@@ -1074,6 +1088,7 @@
         chineseArea.style.visibility = "";
         metaArea.style.visibility = "";
         hintText.style.opacity = "0";
+        hintText.hidden = currentMode === "normal" || isRevealed;
 
         // 例句在自测模式下必须等揭晓后才出现（例句里通常就有这个词）
         if (currentMode !== "normal" && !isRevealed && word.example) {
@@ -1111,10 +1126,6 @@
         // ===== 自动朗读 =====
         // 4.0 修正：原来每次重绘都延时播放，导致快速翻卡时播出“上一张”的词、
         // 按 Q 揭晓答案时重复播放。现在只在“德语可见”且内容确实变化时播一次。
-        if (autoPlayTimer) {
-          clearTimeout(autoPlayTimer);
-          autoPlayTimer = null;
-        }
         const germanVisible =
           currentMode === "normal" || currentMode === "test-de" || isRevealed;
         pronounceIcon.style.display = germanVisible && hasAudio(word) ? "inline-flex" : "none";
@@ -1125,10 +1136,11 @@
           "#" +
           currentMode +
           "#" +
-          (isRevealed ? "r" : "h");
-        if (autoPlayEnabled && germanVisible && hasAudio(word) && autoKey !== lastAutoKey) {
+          (germanVisible ? "visible" : "hidden");
+        if (autoKey !== lastAutoKey) {
+          pauseStudyAudio();
           lastAutoKey = autoKey;
-          if (audioUnlocked) {
+          if (autoPlayEnabled && germanVisible && hasAudio(word) && audioUnlocked) {
             autoPlayTimer = setTimeout(function () {
               autoPlayTimer = null;
               playPronounce(word);
@@ -1144,11 +1156,20 @@
 
       function renderList() {
         const tbody = document.querySelector("#wordTable tbody");
+        const scroll = document.querySelector(".table-scroll");
+        const scrollTop = scroll.scrollTop;
         tbody.innerHTML = "";
-
-        displayWords.forEach(function (word) {
+        document.querySelector(".list-tip").textContent = currentMode === "normal"
+          ? "轻点词条切换星标，点 ♪ 听发音" : "轻点词条查看答案，点 ☆ 切换星标";
+        displayWords.forEach(function (word, index) {
           const tr = document.createElement("tr");
-          tr.className = getBgClass(word);
+          const revealed = currentMode === "normal" || revealedListIds.has(word.id);
+          const showGerman = currentMode !== "test-zh" || revealed;
+          const showChinese = currentMode !== "test-de" || revealed;
+          tr.className = revealed ? getBgClass(word) : "bg-other";
+          tr.dataset.wordId = word.id;
+          tr.tabIndex = 0;
+          tr.onfocus = function () { currentIndex = index; };
           if (word.marked) tr.classList.add("marked");
 
           const displayG =
@@ -1159,11 +1180,11 @@
 
           // 逐格用 textContent 填充：词条里出现 < > & 也不会把表格结构弄坏
           [
-            displayG,
-            word.chinese,
-            word.type,
-            word.plural || "",
-            word.example || "",
+            showGerman ? displayG : "",
+            showChinese ? word.chinese : "",
+            showGerman ? word.type : "",
+            showGerman ? word.plural || "" : "",
+            revealed ? word.example || "" : "",
           ].forEach(
             function (text) {
               const td = document.createElement("td");
@@ -1172,35 +1193,55 @@
             }
           );
 
-          // 单独处理发音单元格
           const tdPronounce = document.createElement("td");
           tdPronounce.className = "pronounce-cell";
-          if (hasAudio(word)) {
-            const icon = document.createElement("span");
-            icon.textContent = "🔊";
-            icon.style.cursor = "pointer";
-            icon.onclick = function (e) {
-              e.stopPropagation(); // 避免触发行点击事件
-              playPronounce(word);
-            };
-            tdPronounce.appendChild(icon);
-          } else {
-            // 没有音频时给个明确标记，免得"空着"看不出是缺文件还是没加载
-            const none = document.createElement("span");
-            none.textContent = "🔇";
-            none.title = "没有找到这个词的音频文件";
-            none.style.opacity = "0.45";
-            none.style.cursor = "help";
-            tdPronounce.appendChild(none);
+          const star = document.createElement("button");
+          star.className = "list-star";
+          star.textContent = word.marked ? "★" : "☆";
+          star.setAttribute("aria-label", "星标 " + (showGerman ? word.german : word.chinese));
+          star.setAttribute("aria-pressed", String(word.marked));
+          star.onclick = function (e) { e.stopPropagation(); currentIndex = index; toggleMark(word); };
+          tdPronounce.appendChild(star);
+          if (showGerman && hasAudio(word)) {
+            const audio = document.createElement("button");
+            audio.className = "list-audio";
+            audio.textContent = "♪";
+            audio.setAttribute("aria-label", "播放发音");
+            audio.onclick = function (e) { e.stopPropagation(); currentIndex = index; playPronounce(word); };
+            tdPronounce.appendChild(audio);
           }
           tr.appendChild(tdPronounce);
-
-          // 星标操作
+          if (currentMode !== "normal") {
+            const answerCell = document.createElement("td");
+            answerCell.className = "list-answer";
+            const answer = document.createElement("button");
+            answer.textContent = revealed ? "隐藏答案" : "显示答案";
+            answer.setAttribute("aria-expanded", String(revealed));
+            answer.onclick = function (e) { e.stopPropagation(); currentIndex = index; toggleListReveal(word); };
+            answerCell.appendChild(answer);
+            tr.appendChild(answerCell);
+          }
           tr.onclick = function () {
-            toggleMark(word);
+            currentIndex = index;
+            if (currentMode === "normal") toggleMark(word); else toggleListReveal(word);
+          };
+          tr.onkeydown = function (e) {
+            if (e.target !== tr || !["Enter", " "].includes(e.key)) return;
+            e.preventDefault(); e.stopPropagation(); currentIndex = index;
+            if (e.key === " " || currentMode === "normal") toggleMark(word); else toggleListReveal(word);
           };
           tbody.appendChild(tr);
         });
+        scroll.scrollTop = scrollTop;
+      }
+
+      function toggleListReveal(word) {
+        if (currentMode === "normal" || !word) return;
+        pauseStudyAudio();
+        const revealed = !revealedListIds.has(word.id);
+        if (revealed) revealedListIds.add(word.id); else revealedListIds.delete(word.id);
+        updateUI();
+        if (revealed && currentMode === "test-zh" && autoPlayEnabled && hasAudio(word)) playPronounce(word);
       }
 
       // === 交互操作 ===
@@ -1208,7 +1249,7 @@
         if (currentIndex < displayWords.length - 1) {
           currentIndex++;
           isRevealed = false;
-          renderCard();
+          updateUI();
         }
       }
 
@@ -1216,7 +1257,7 @@
         if (currentIndex > 0) {
           currentIndex--;
           isRevealed = false;
-          renderCard();
+          updateUI();
         }
       }
 
@@ -1227,10 +1268,7 @@
       function toggleMark(wordObj) {
         wordObj.marked = !wordObj.marked;
 
-        const original = currentFileWords.find(function (w) {
-          return w.id === wordObj.id;
-        });
-        if (original) original.marked = wordObj.marked;
+        currentFileWords.forEach(w => { if (w.german === wordObj.german) w.marked = wordObj.marked; });
 
         store.setMark(currentFileName, wordObj.german, wordObj.marked);
 
@@ -1247,7 +1285,7 @@
 
         // 焦点在输入控件里时不抢按键
         const tag = (e.target && e.target.tagName) || "";
-        if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        if (["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(tag)) return;
 
         const key = String(e.key || "").toLowerCase();
 
@@ -1268,4 +1306,3 @@
           toggleCurrentMark();
         }
       });
-    

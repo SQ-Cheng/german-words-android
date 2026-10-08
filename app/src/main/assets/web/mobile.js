@@ -3,6 +3,13 @@ const PREF_KEY = 'german_android_preferences_v1';
 let preferences;
 try { preferences = JSON.parse(localStorage.getItem(PREF_KEY) || '{}'); } catch (_) { preferences = {}; }
 if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) preferences = {};
+function normalizePreferences(value) {
+  const result = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const books = result.books && typeof result.books === 'object' && !Array.isArray(result.books) ? result.books : {};
+  result.books = Object.assign(Object.create(null), books);
+  return result;
+}
+preferences = normalizePreferences(preferences);
 let autoPlayEnabled = preferences.autoPlay !== false;
 let restoring = false;
 let libraryOpen = false;
@@ -23,7 +30,8 @@ function handleAndroidBack() { if (libraryOpen) { closeLibrary(); return true; }
 function setImportBusy(busy) {
   importBusy = busy;
   document.querySelectorAll('.btn-group button').forEach(b => b.disabled = busy);
-  document.getElementById('sidebarStatus').textContent = busy ? '正在复制词表和音频，请稍候…' : '词库已保存在手机，可离线学习';
+  if (busy) document.getElementById('sidebarStatus').textContent = '正在导入…';
+  else if (document.getElementById('sidebarStatus').textContent === '正在导入…') document.getElementById('sidebarStatus').textContent = '';
 }
 function pauseStudyAudio() {
   if (autoPlayTimer) { clearTimeout(autoPlayTimer); autoPlayTimer = null; }
@@ -33,9 +41,8 @@ function pauseStudyAudio() {
 function toggleAutoPlay() {
   autoPlayEnabled = !autoPlayEnabled;
   if (!autoPlayEnabled) pauseStudyAudio();
-  document.getElementById('autoPlayButton').textContent = '自动发音 · ' + (autoPlayEnabled ? '开' : '关');
-  document.getElementById('autoPlayButton').setAttribute('aria-pressed', String(autoPlayEnabled));
-  saveStudy();
+  lastAutoKey = null;
+  updateUI();
 }
 function saveStudy() {
   if (restoring) return;
@@ -44,11 +51,11 @@ function saveStudy() {
   preferences.view = currentView;
   preferences.filter = isFilterActive;
   preferences.autoPlay = autoPlayEnabled;
-  preferences.books = preferences.books || {};
-  if (currentFileName && displayWords.length) {
+  if (currentFileName && currentFileWords.length) {
     preferences.books[currentFileName] = {
       word: displayWords[currentIndex] && displayWords[currentIndex].id,
-      order: displayWords.map(w => w.id)
+      shuffled: isShuffled,
+      order: isShuffled ? orderedWords.map(w => w.id) : undefined
     };
   }
   try { localStorage.setItem(PREF_KEY, JSON.stringify(preferences)); }
@@ -59,44 +66,19 @@ function paintStudy() {
   document.getElementById('lessonTitle').textContent = title;
   document.getElementById('lessonCount').textContent = currentFileWords.length + ' 词';
   document.getElementById('studyProgress').style.width = (displayWords.length ? (currentIndex + 1) / displayWords.length * 100 : 0) + '%';
-  document.getElementById('studyStatus').textContent = displayWords.length ?
-    (currentIndex + 1) + ' / ' + displayWords.length + ' · 进度自动保存' : '离线学习 · 进度自动保存';
+  document.querySelector('.progress-track').setAttribute('aria-valuenow', String(displayWords.length ? Math.round((currentIndex + 1) / displayWords.length * 100) : 0));
   const star = document.querySelector('.star-mark');
   const word = displayWords[currentIndex];
   star.textContent = word && word.marked ? '★' : '☆';
   star.setAttribute('aria-pressed', String(!!(word && word.marked)));
   document.getElementById('autoPlayButton').textContent = '自动发音 · ' + (autoPlayEnabled ? '开' : '关');
   document.getElementById('autoPlayButton').setAttribute('aria-pressed', String(autoPlayEnabled));
-  document.querySelectorAll('.pronounce-cell span').forEach(span => {
-    if (span.textContent === '🔊') { span.textContent = '♪'; span.setAttribute('role','button'); span.setAttribute('aria-label','播放发音'); }
-  });
-}
-const originalUpdateUI = updateUI;
-updateUI = function () { originalUpdateUI(); paintStudy(); saveStudy(); };
-const originalRenderCard = renderCard;
-renderCard = function () { originalRenderCard(); paintStudy(); saveStudy(); };
-const originalLoadFile = loadFile;
-let latestLoad = 0;
-loadFile = async function (name) {
-  const request = ++latestLoad;
-  pauseStudyAudio();
-  const saved = preferences.books && preferences.books[name];
-  restoring = true;
-  try {
-    const success = await originalLoadFile(name);
-    if (!success || request !== latestLoad) return;
-    if (saved && Array.isArray(saved.order)) {
-      const ranks = new Map(saved.order.map((id,i) => [id,i]));
-      displayWords.sort((a,b) => (ranks.has(a.id) ? ranks.get(a.id) : Infinity) - (ranks.has(b.id) ? ranks.get(b.id) : Infinity));
-      const position = displayWords.findIndex(w => w.id === saved.word);
-      if (position >= 0) currentIndex = position;
-      updateUI();
-    }
-    closeLibrary();
-  } finally { if (request === latestLoad) { restoring = false; paintStudy(); saveStudy(); } }
-};
-for (const [key,action] of [['nextCard',nextCard],['prevCard',prevCard],['changeMode',changeMode],['switchView',switchView],['shuffleCurrentList',shuffleCurrentList]]) {
-  window[key] = function (...args) { pauseStudyAudio(); return action(...args); };
+  const shuffle = document.getElementById('btnShuffle');
+  shuffle.textContent = isShuffled ? '恢复顺序' : '乱序';
+  shuffle.classList.toggle('active', isShuffled);
+  shuffle.setAttribute('aria-pressed', String(isShuffled));
+  shuffle.disabled = !currentFileWords.length;
+  document.getElementById('btnFilter').setAttribute('aria-pressed', String(isFilterActive));
 }
 // Touch gestures ignore taps on controls and vertical scrolling inside long cards.
 let touchStart = null;
@@ -135,7 +117,7 @@ function restoreBackup(raw) {
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(safeMarks));
     if (data.preferences && typeof data.preferences === 'object' && !Array.isArray(data.preferences)) {
-      preferences = data.preferences;
+      preferences = normalizePreferences(data.preferences);
       localStorage.setItem(PREF_KEY, JSON.stringify(preferences));
     }
     applyPreferences();
@@ -144,6 +126,7 @@ function restoreBackup(raw) {
   } catch (e) { notify('恢复失败：' + e.message, 'error'); }
 }
 function applyPreferences() {
+  preferences = normalizePreferences(preferences);
   currentMode = ['normal','test-zh','test-de'].includes(preferences.mode) ? preferences.mode : 'normal';
   currentView = preferences.view === 'list' ? 'list' : 'card';
   isFilterActive = preferences.filter === true;
@@ -157,7 +140,7 @@ async function reloadLibrary(selectImported) {
   try {
     const manifest = window.Android ? JSON.parse(Android.manifest()) : await (await fetch('manifest.json')).json();
     const files = manifest.map(item => ({
-      name:item.name, webkitRelativePath:item.path, url:new URL(item.url,location.href).href,
+      name:item.name, webkitRelativePath:item.path, url:new URL(item.url.split('/').map(encodeURIComponent).join('/'),location.href).href,
       root:item.imported ? item.path.split('/')[0] : 'built-in',
       imported:!!item.imported,
       arrayBuffer:async function () {
